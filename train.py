@@ -31,6 +31,37 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 EPS = 1e-5
+
+
+def _infer_camera_name(viewpoint, default_cam_num=1):
+    if viewpoint.image_path is not None:
+        cam_name = os.path.basename(os.path.dirname(viewpoint.image_path))
+        if cam_name:
+            return cam_name
+    colmap_id = getattr(viewpoint, "colmap_id", None)
+    if isinstance(colmap_id, (int, np.integer)):
+        return f"image_{int(colmap_id) % max(1, int(default_cam_num))}"
+    return "image_unknown"
+
+
+def _write_camera_videos(frame_paths_by_cam, outdir, fps):
+    try:
+        import imageio.v2 as imageio
+    except ImportError:
+        print("imageio is not installed, skip video export.")
+        return
+
+    os.makedirs(outdir, exist_ok=True)
+    for cam_name, frame_paths in sorted(frame_paths_by_cam.items()):
+        ordered_frame_paths = sorted(frame_paths)
+        if not ordered_frame_paths:
+            continue
+        video_path = os.path.join(outdir, f"{cam_name}.mp4")
+        with imageio.get_writer(video_path, fps=float(fps), macro_block_size=1) as writer:
+            for frame_path in ordered_frame_paths:
+                writer.append_data(imageio.imread(frame_path))
+
+
 def training(args):
     
     if TENSORBOARD_FOUND:
@@ -292,6 +323,16 @@ def complete_eval(tb_writer, iteration, test_iterations, scene : Scene, renderFu
                 lpips_test = 0.0
                 outdir = os.path.join(args.model_path, "eval", config['name'] + f"_{iteration}" + "_render")
                 os.makedirs(outdir,exist_ok=True)
+                export_train_video = (
+                    config['name'] == 'train'
+                    and iteration == args.iterations
+                    and getattr(args, "save_train_render_video", False)
+                )
+                if export_train_video:
+                    render_only_outdir = os.path.join(args.model_path, "eval", config['name'] + f"_{iteration}" + "_render_only")
+                    video_outdir = os.path.join(args.model_path, "eval", config['name'] + f"_{iteration}" + "_videos")
+                    os.makedirs(render_only_outdir, exist_ok=True)
+                    frame_paths_by_cam = defaultdict(list)
                 for idx, viewpoint in enumerate(tqdm(config['cameras'])):
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs, env_map=env_map)
                     image = torch.clamp(render_pkg["render"], 0.0, 1.0)
@@ -313,6 +354,14 @@ def complete_eval(tb_writer, iteration, test_iterations, scene : Scene, renderFu
                     grid = make_grid(grid, nrow=2)
 
                     save_image(grid, os.path.join(outdir, f"{viewpoint.colmap_id:03d}.png"))
+                    if export_train_video:
+                        cam_name = _infer_camera_name(viewpoint, args.cam_num)
+                        cam_outdir = os.path.join(render_only_outdir, cam_name)
+                        os.makedirs(cam_outdir, exist_ok=True)
+                        frame_name = viewpoint.image_name if viewpoint.image_name is not None else f"{idx:06d}"
+                        frame_path = os.path.join(cam_outdir, f"{frame_name}.png")
+                        save_image(image, frame_path)
+                        frame_paths_by_cam[cam_name].append(frame_path)
 
                     l1_test += F.l1_loss(image, gt_image).double()
                     psnr_test += psnr(image, gt_image).double()
@@ -331,6 +380,13 @@ def complete_eval(tb_writer, iteration, test_iterations, scene : Scene, renderFu
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - ssim', ssim_test, iteration)
                 with open(os.path.join(outdir, "metrics.json"), "w") as f:
                     json.dump({"split": config['name'], "iteration": iteration, "psnr": psnr_test.item(), "ssim": ssim_test.item(), "lpips": lpips_test.item()}, f)
+                if export_train_video:
+                    _write_camera_videos(
+                        frame_paths_by_cam,
+                        video_outdir,
+                        getattr(args, "train_render_video_fps", 10)
+                    )
+                    print(f"[ITER {iteration}] Saved per-camera train videos to {video_outdir}")
         torch.cuda.empty_cache()
 
 

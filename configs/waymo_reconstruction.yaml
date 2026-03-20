@@ -5,6 +5,8 @@ exhaust_test: false
 scene_type: "Waymo"
 resolution_scales: [1, 2, 4, 8, 16]
 cam_num: 3
+start_frame: 0
+end_frame: -1
 eval: false
 num_pts: 600000
 t_init: 0.1
@@ -24,5 +26,4 @@ sh_increase_interval: 2000
 
 
 lambda_v_reg: 0.01
-
 

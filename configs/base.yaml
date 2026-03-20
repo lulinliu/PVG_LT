@@ -5,6 +5,8 @@ exhaust_test: false
 test_interval: 5000
 render_static: false
 vis_step: 500
+save_train_render_video: false
+train_render_video_fps: 10
 start_checkpoint: null
 seed: 0
 

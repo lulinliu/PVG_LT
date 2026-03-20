@@ -10,3 +10,27 @@ data
 output
 eval_output
 diff-gaussian-rasterization
+# data / debug / outputs
+0c1afba4-e796-43c6-ba36-6a225b6f2968/
+_debug/
+data_longtail/
+rendered_videos/
+sample1/
+video_exports/
+
+# optional runtime outputs
+*.mp4
+*.avi
+*.mov
+*.gif
+*.png
+*.jpg
+*.jpeg
+
+# python cache
+__pycache__/
+*.pyc
+
+third_party/
+nvdiffrast/
+simple-knn/

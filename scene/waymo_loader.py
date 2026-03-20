@@ -63,11 +63,58 @@ def transform_poses_pca(poses, fix_radius=0):
     return poses_recentered, transform, scale_factor
 
 
+def _make_synthetic_pointcloud(c2ws, timestamps):
+    points = []
+    point_times = []
+    offsets = [
+        (0.0, 0.0),
+        (-0.35, -0.20),
+        (-0.35, 0.20),
+        (0.35, -0.20),
+        (0.35, 0.20),
+        (0.0, -0.30),
+        (0.0, 0.30),
+        (-0.55, 0.0),
+        (0.55, 0.0),
+    ]
+    depths = [4.0, 8.0, 12.0]
+
+    for idx, c2w in enumerate(c2ws):
+        origin = c2w[:3, 3]
+        right = c2w[:3, 0]
+        down = c2w[:3, 1]
+        forward = c2w[:3, 2]
+        forward_norm = np.linalg.norm(forward)
+        if forward_norm < 1e-8:
+            continue
+        forward = forward / forward_norm
+        for depth in depths:
+            base = origin + forward * depth
+            for off_x, off_y in offsets:
+                points.append(base + right * off_x * depth + down * off_y * depth)
+                point_times.append([timestamps[idx]])
+
+    if not points:
+        return np.zeros((1, 3), dtype=np.float32), np.zeros((1, 1), dtype=np.float32)
+
+    return np.asarray(points, dtype=np.float32), np.asarray(point_times, dtype=np.float32)
+
+
 def readWaymoInfo(args):
     cam_infos = []
     car_list = [f[:-4] for f in sorted(os.listdir(os.path.join(args.source_path, "calib"))) if f.endswith('.txt')]
     points = []
     points_time = []
+
+    first_frame = max(0, int(getattr(args, "start_frame", 0)))
+    last_frame = int(getattr(args, "end_frame", -1))
+    if last_frame < 0 or last_frame >= len(car_list):
+        last_frame = len(car_list) - 1
+    if first_frame > last_frame:
+        raise ValueError(
+            f"Invalid Waymo frame range: start_frame={first_frame}, end_frame={last_frame}, total_frames={len(car_list)}"
+        )
+    car_list = car_list[first_frame:last_frame + 1]
 
     frame_num = len(car_list)
     if args.frame_interval > 0:
@@ -108,15 +155,22 @@ def readWaymoInfo(args):
             sky_masks.append(sky_mask.astype(np.float32))
 
         timestamp = time_duration[0] + (time_duration[1] - time_duration[0]) * idx / (len(car_list) - 1)
-        point = np.fromfile(os.path.join(args.source_path, "velodyne", car_id + ".bin"),
-                            dtype=np.float32, count=-1).reshape(-1, 6)
-        point_xyz, intensity, elongation, timestamp_pts = np.split(point, [3, 4, 5], axis=1)
-        point_xyz_world = (np.pad(point_xyz, (0, 1), constant_values=1) @ ego_pose.T)[:, :3]
-        points.append(point_xyz_world)
-        point_time = np.full_like(point_xyz_world[:, :1], timestamp)
-        points_time.append(point_time)
+        point_xyz = None
+        velodyne_path = os.path.join(args.source_path, "velodyne", car_id + ".bin")
+        if os.path.exists(velodyne_path) and os.path.getsize(velodyne_path) > 0:
+            point = np.fromfile(velodyne_path, dtype=np.float32, count=-1)
+            if point.size % 6 != 0:
+                raise ValueError(f"Unexpected velodyne shape for {velodyne_path}: float_count={point.size}")
+            point = point.reshape(-1, 6)
+            point_xyz, intensity, elongation, timestamp_pts = np.split(point, [3, 4, 5], axis=1)
+            point_xyz_world = (np.pad(point_xyz, ((0, 0), (0, 1)), constant_values=1) @ ego_pose.T)[:, :3]
+            points.append(point_xyz_world)
+            point_time = np.full_like(point_xyz_world[:, :1], timestamp)
+            points_time.append(point_time)
         for j in range(args.cam_num):
-            point_camera = (np.pad(point_xyz, ((0, 0), (0, 1)), constant_values=1) @ lidar2cam[j].T)[:, :3]
+            point_camera = None
+            if point_xyz is not None:
+                point_camera = (np.pad(point_xyz, ((0, 0), (0, 1)), constant_values=1) @ lidar2cam[j].T)[:, :3]
             R = np.transpose(w2c[j, :3, :3])  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[j, :3, 3]
             K = Ks[j]
@@ -125,7 +179,7 @@ def readWaymoInfo(args):
             cx = float(K[0, 2])
             cy = float(K[1, 2])
             FovX = FovY = -1.0
-            cam_infos.append(CameraInfo(uid=idx * 5 + j, R=R, T=T, FovY=FovY, FovX=FovX,
+            cam_infos.append(CameraInfo(uid=idx * args.cam_num + j, R=R, T=T, FovY=FovY, FovX=FovX,
                                         image=images[j], 
                                         image_path=image_paths[j], image_name=car_id,
                                         width=HWs[j][1], height=HWs[j][0], timestamp=timestamp,
@@ -135,12 +189,6 @@ def readWaymoInfo(args):
 
         if args.debug_cuda:
             break
-
-    pointcloud = np.concatenate(points, axis=0)
-    pointcloud_timestamp = np.concatenate(points_time, axis=0)
-    indices = np.random.choice(pointcloud.shape[0], args.num_pts, replace=True)
-    pointcloud = pointcloud[indices]
-    pointcloud_timestamp = pointcloud_timestamp[indices]
 
     w2cs = np.zeros((len(cam_infos), 4, 4))
     Rs = np.stack([c.R for c in cam_infos], axis=0)
@@ -157,8 +205,21 @@ def readWaymoInfo(args):
         w2c = np.linalg.inv(c2w)
         cam_info.R[:] = np.transpose(w2c[:3, :3])  # R is stored transposed due to 'glm' in CUDA code
         cam_info.T[:] = w2c[:3, 3]
-        cam_info.pointcloud_camera[:] *= scale_factor
-    pointcloud = (np.pad(pointcloud, ((0, 0), (0, 1)), constant_values=1) @ transform.T)[:, :3]
+        if cam_info.pointcloud_camera is not None:
+            cam_info.pointcloud_camera[:] *= scale_factor
+
+    if points:
+        pointcloud = np.concatenate(points, axis=0)
+        pointcloud_timestamp = np.concatenate(points_time, axis=0)
+        pointcloud = (np.pad(pointcloud, ((0, 0), (0, 1)), constant_values=1) @ transform.T)[:, :3]
+    else:
+        timestamps = np.asarray([cam_info.timestamp for cam_info in cam_infos], dtype=np.float32)
+        pointcloud, pointcloud_timestamp = _make_synthetic_pointcloud(c2ws, timestamps)
+
+    indices = np.random.choice(pointcloud.shape[0], args.num_pts, replace=True)
+    pointcloud = pointcloud[indices]
+    pointcloud_timestamp = pointcloud_timestamp[indices]
+
     if args.eval:
         # ## for snerf scene
         # train_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // cam_num) % testhold != 0]
