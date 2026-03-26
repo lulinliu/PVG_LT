@@ -18,23 +18,12 @@ def unpad_poses(p):
 
 
 def transform_poses_pca(poses, fix_radius=0):
-    """Transforms poses so principal components lie on XYZ axes.
-
-  Args:
-    poses: a (N, 3, 4) array containing the cameras' camera to world transforms.
-
-  Returns:
-    A tuple (poses, transform), with the transformed poses and the applied
-    camera_to_world transforms.
-    
-    From https://github.com/SuLvXiangXin/zipnerf-pytorch/blob/af86ea6340b9be6b90ea40f66c0c02484dfc7302/internal/camera_utils.py#L161
-  """
+    """Transforms poses so principal components lie on XYZ axes."""
     t = poses[:, :3, 3]
     t_mean = t.mean(axis=0)
     t = t - t_mean
 
     eigval, eigvec = np.linalg.eig(t.T @ t)
-    # Sort eigenvectors in order of largest to smallest eigenvalue.
     inds = np.argsort(eigval)[::-1]
     eigvec = eigvec[:, inds]
     rot = eigvec.T
@@ -45,16 +34,14 @@ def transform_poses_pca(poses, fix_radius=0):
     poses_recentered = unpad_poses(transform @ pad_poses(poses))
     transform = np.concatenate([transform, np.eye(4)[3:]], axis=0)
 
-    # Flip coordinate system if z component of y-axis is negative
     if poses_recentered.mean(axis=0)[2, 1] < 0:
         poses_recentered = np.diag(np.array([1, -1, -1])) @ poses_recentered
         transform = np.diag(np.array([1, -1, -1, 1])) @ transform
 
-    # Just make sure it's it in the [-1, 1]^3 cube
-    if fix_radius>0:
-        scale_factor = 1./fix_radius
+    if fix_radius > 0:
+        scale_factor = 1.0 / fix_radius
     else:
-        scale_factor = 1. / (np.max(np.abs(poses_recentered[:, :3, 3])) + 1e-5)
+        scale_factor = 1.0 / (np.max(np.abs(poses_recentered[:, :3, 3])) + 1e-5)
         scale_factor = min(1 / 10, scale_factor)
 
     poses_recentered[:, :3, 3] *= scale_factor
@@ -100,6 +87,52 @@ def _make_synthetic_pointcloud(c2ws, timestamps):
     return np.asarray(points, dtype=np.float32), np.asarray(point_times, dtype=np.float32)
 
 
+def _load_mask(mask_path):
+    if mask_path is None or not os.path.exists(mask_path):
+        return None
+    mask = np.array(Image.open(mask_path), dtype=np.float32)
+    if mask.ndim == 3:
+        mask = mask[..., 0]
+    if mask.max() > 1.0:
+        mask = mask / 255.0
+    return mask[..., None]
+
+
+def _resolve_longtail_mask_path(source_path, mask_dirname, cam_idx, frame_name):
+    frame_candidates = [frame_name]
+    if isinstance(frame_name, str) and frame_name.isdigit():
+        frame_candidates.extend([
+            f"{int(frame_name):06d}",
+            f"{int(frame_name):04d}",
+        ])
+    frame_candidates = list(dict.fromkeys(frame_candidates))
+
+    candidates = []
+    mask_root = os.path.join(source_path, mask_dirname)
+    if os.path.isdir(mask_root):
+        for candidate_frame in frame_candidates:
+            candidates.extend([
+                os.path.join(mask_root, f"{candidate_frame}_{cam_idx}.png"),
+                os.path.join(mask_root, f"{candidate_frame}_image_{cam_idx}.png"),
+                os.path.join(mask_root, f"{candidate_frame}_cam_{cam_idx}.png"),
+                os.path.join(mask_root, f"{candidate_frame}_cam{cam_idx}.png"),
+                os.path.join(mask_root, f"image_{cam_idx}", f"{candidate_frame}.png"),
+                os.path.join(mask_root, str(cam_idx), f"{candidate_frame}.png"),
+            ])
+
+    for candidate_frame in frame_candidates:
+        candidates.extend([
+            os.path.join(source_path, f"longtail_mask{cam_idx}", f"{candidate_frame}.png"),
+            os.path.join(source_path, f"lt_mask{cam_idx}", f"{candidate_frame}.png"),
+            os.path.join(source_path, f"lt_masks{cam_idx}", f"{candidate_frame}.png"),
+        ])
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def readWaymoInfo(args):
     cam_infos = []
     car_list = [f[:-4] for f in sorted(os.listdir(os.path.join(args.source_path, "calib"))) if f.endswith('.txt')]
@@ -118,14 +151,13 @@ def readWaymoInfo(args):
 
     frame_num = len(car_list)
     if args.frame_interval > 0:
-        time_duration = [-args.frame_interval*(frame_num-1)/2,args.frame_interval*(frame_num-1)/2]
+        time_duration = [-args.frame_interval * (frame_num - 1) / 2, args.frame_interval * (frame_num - 1) / 2]
     else:
         time_duration = args.time_duration
 
     for idx, car_id in tqdm(enumerate(car_list), desc="Loading data"):
         ego_pose = np.loadtxt(os.path.join(args.source_path, 'pose', car_id + '.txt'))
 
-        # CAMERA DIRECTION: RIGHT DOWN FORWARDS
         with open(os.path.join(args.source_path, 'calib', car_id + '.txt')) as f:
             calib_data = f.readlines()
             L = [list(map(float, line.split()[1:])) for line in calib_data]
@@ -143,7 +175,7 @@ def readWaymoInfo(args):
             image_path = os.path.join(args.source_path, subdir, car_id + '.png')
             im_data = Image.open(image_path)
             W, H = im_data.size
-            image = np.array(im_data) / 255.
+            image = np.array(im_data) / 255.0
             HWs.append((H, W))
             images.append(image)
             image_paths.append(image_path)
@@ -151,10 +183,31 @@ def readWaymoInfo(args):
         sky_masks = []
         for subdir in ['sky_0', 'sky_1', 'sky_2', 'sky_3', 'sky_4'][:args.cam_num]:
             sky_data = np.array(Image.open(os.path.join(args.source_path, subdir, car_id + '.png')))
-            sky_mask = sky_data>0
+            sky_mask = sky_data > 0
             sky_masks.append(sky_mask.astype(np.float32))
 
-        timestamp = time_duration[0] + (time_duration[1] - time_duration[0]) * idx / (len(car_list) - 1)
+        lt_masks = []
+        lt_mask_confs = []
+        for cam_idx in range(args.cam_num):
+            lt_mask_path = _resolve_longtail_mask_path(
+                args.source_path,
+                getattr(args, 'lt_mask_dirname', 'lt_masks'),
+                cam_idx,
+                car_id,
+            )
+            lt_mask_conf = _load_mask(lt_mask_path)
+            if lt_mask_conf is None:
+                lt_masks.append(None)
+                lt_mask_confs.append(None)
+            else:
+                lt_mask_confs.append(lt_mask_conf.astype(np.float32))
+                lt_masks.append((lt_mask_conf > 0).astype(np.float32))
+
+        if len(car_list) > 1:
+            timestamp = time_duration[0] + (time_duration[1] - time_duration[0]) * idx / (len(car_list) - 1)
+        else:
+            timestamp = 0.5 * (time_duration[0] + time_duration[1])
+
         point_xyz = None
         velodyne_path = os.path.join(args.source_path, "velodyne", car_id + ".bin")
         if os.path.exists(velodyne_path) and os.path.getsize(velodyne_path) > 0:
@@ -167,11 +220,12 @@ def readWaymoInfo(args):
             points.append(point_xyz_world)
             point_time = np.full_like(point_xyz_world[:, :1], timestamp)
             points_time.append(point_time)
+
         for j in range(args.cam_num):
             point_camera = None
             if point_xyz is not None:
                 point_camera = (np.pad(point_xyz, ((0, 0), (0, 1)), constant_values=1) @ lidar2cam[j].T)[:, :3]
-            R = np.transpose(w2c[j, :3, :3])  # R is stored transposed due to 'glm' in CUDA code
+            R = np.transpose(w2c[j, :3, :3])
             T = w2c[j, :3, 3]
             K = Ks[j]
             fx = float(K[0, 0])
@@ -179,13 +233,27 @@ def readWaymoInfo(args):
             cx = float(K[0, 2])
             cy = float(K[1, 2])
             FovX = FovY = -1.0
-            cam_infos.append(CameraInfo(uid=idx * args.cam_num + j, R=R, T=T, FovY=FovY, FovX=FovX,
-                                        image=images[j], 
-                                        image_path=image_paths[j], image_name=car_id,
-                                        width=HWs[j][1], height=HWs[j][0], timestamp=timestamp,
-                                        pointcloud_camera = point_camera,
-                                        fx=fx, fy=fy, cx=cx, cy=cy, 
-                                        sky_mask=sky_masks[j]))
+            cam_infos.append(CameraInfo(
+                uid=idx * args.cam_num + j,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                image=images[j],
+                image_path=image_paths[j],
+                image_name=car_id,
+                width=HWs[j][1],
+                height=HWs[j][0],
+                sky_mask=sky_masks[j],
+                lt_mask=lt_masks[j],
+                lt_mask_conf=lt_mask_confs[j],
+                timestamp=timestamp,
+                pointcloud_camera=point_camera,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+            ))
 
         if args.debug_cuda:
             break
@@ -203,7 +271,7 @@ def readWaymoInfo(args):
     for idx, cam_info in enumerate(tqdm(cam_infos, desc="Transform data")):
         c2w = c2ws[idx]
         w2c = np.linalg.inv(c2w)
-        cam_info.R[:] = np.transpose(w2c[:3, :3])  # R is stored transposed due to 'glm' in CUDA code
+        cam_info.R[:] = np.transpose(w2c[:3, :3])
         cam_info.T[:] = w2c[:3, 3]
         if cam_info.pointcloud_camera is not None:
             cam_info.pointcloud_camera[:] *= scale_factor
@@ -221,24 +289,17 @@ def readWaymoInfo(args):
     pointcloud_timestamp = pointcloud_timestamp[indices]
 
     if args.eval:
-        # ## for snerf scene
-        # train_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // cam_num) % testhold != 0]
-        # test_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // cam_num) % testhold == 0]
-
-        # for dynamic scene
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // args.cam_num + 1) % args.testhold != 0]
         test_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // args.cam_num + 1) % args.testhold == 0]
-        
-        # for emernerf comparison [testhold::testhold]
         if args.testhold == 10:
             train_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // args.cam_num) % args.testhold != 0 or (idx // args.cam_num) == 0]
-            test_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // args.cam_num) % args.testhold == 0 and (idx // args.cam_num)>0]
+            test_cam_infos = [c for idx, c in enumerate(cam_infos) if (idx // args.cam_num) % args.testhold == 0 and (idx // args.cam_num) > 0]
     else:
         train_cam_infos = cam_infos
         test_cam_infos = []
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
-    nerf_normalization['radius'] = 1/nerf_normalization['radius']
+    nerf_normalization['radius'] = 1 / nerf_normalization['radius']
 
     ply_path = os.path.join(args.source_path, "points3d.ply")
     if not os.path.exists(ply_path):
@@ -246,18 +307,23 @@ def readWaymoInfo(args):
         storePly(ply_path, pointcloud, rgbs, pointcloud_timestamp)
     try:
         pcd = fetchPly(ply_path)
-    except:
+    except Exception:
         pcd = None
 
-    pcd = BasicPointCloud(pointcloud, colors=np.zeros([pointcloud.shape[0],3]), normals=None, time=pointcloud_timestamp)
-    time_interval = (time_duration[1] - time_duration[0]) / (len(car_list) - 1)
+    pcd = BasicPointCloud(pointcloud, colors=np.zeros([pointcloud.shape[0], 3]), normals=None, time=pointcloud_timestamp)
+    if len(car_list) > 1:
+        time_interval = (time_duration[1] - time_duration[0]) / (len(car_list) - 1)
+    else:
+        time_interval = max(float(args.frame_interval), 1e-3)
 
-    scene_info = SceneInfo(point_cloud=pcd,
-                           train_cameras=train_cam_infos,
-                           test_cameras=test_cam_infos,
-                           nerf_normalization=nerf_normalization,
-                           ply_path=ply_path,
-                           time_interval=time_interval,
-                           time_duration=time_duration)
+    scene_info = SceneInfo(
+        point_cloud=pcd,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path,
+        time_interval=time_interval,
+        time_duration=time_duration,
+    )
 
     return scene_info

@@ -15,6 +15,8 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     sky_mask: np.array = None
+    lt_mask: np.array = None
+    lt_mask_conf: np.array = None
     timestamp: float = 0.0
     FovY: float = None
     FovX: float = None
@@ -24,6 +26,7 @@ class CameraInfo(NamedTuple):
     cy: float = None
     pointcloud_camera: np.array = None
 
+
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
@@ -32,6 +35,7 @@ class SceneInfo(NamedTuple):
     ply_path: str
     time_interval: float = 0.02
     time_duration: list = [-0.5, 0.5]
+
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -71,7 +75,6 @@ def fetchPly(path):
 
 
 def storePly(path, xyz, rgb, timestamp=None):
-    # Define the dtype for the structured array
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
              ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
              ('red', 'u1'), ('green', 'u1'), ('blue', 'u1'),
@@ -85,7 +88,6 @@ def storePly(path, xyz, rgb, timestamp=None):
     attributes = np.concatenate((xyz, normals, rgb, timestamp), axis=1)
     elements[:] = list(map(tuple, attributes))
 
-    # Create the PlyData object and write to file
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)

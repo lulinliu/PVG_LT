@@ -72,6 +72,20 @@ class Scene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
         self.resolution_scales = args.resolution_scales
         self.scale_index = len(self.resolution_scales) - 1
+        requested_scale = getattr(args, "initial_resolution_scale", None)
+        if requested_scale is not None:
+            requested_scale = float(requested_scale)
+            matched_index = None
+            for idx, resolution_scale in enumerate(self.resolution_scales):
+                if float(resolution_scale) == requested_scale:
+                    matched_index = idx
+                    break
+            if matched_index is None:
+                raise ValueError(
+                    f"initial_resolution_scale={requested_scale} is not in resolution_scales={self.resolution_scales}"
+                )
+            self.scale_index = matched_index
+            print(f"Starting training from resolution scale {self.resolution_scales[self.scale_index]}")
         for resolution_scale in self.resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)

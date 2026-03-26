@@ -19,28 +19,28 @@ from utils.sh_utils import eval_sh
 
 def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, scaling_modifier=1.0,
            override_color=None, env_map=None,
-           time_shift=None, other=[], mask=None, is_training=False):
+           time_shift=None, other=None, mask=None, lt_point_mask=None, is_training=False):
     """
-    Render the scene. 
-    
+    Render the scene.
+
     Background tensor (bg_color) must be on GPU!
     """
-    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
+    if other is None:
+        other = []
+
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
         screenspace_points.retain_grad()
-    except:
+    except Exception:
         pass
 
-    # Set up rasterization configuration
     if pipe.neg_fov:
-        # we find that set fov as -1 slightly improves the results
         tanfovx = math.tan(-0.5)
         tanfovy = math.tan(-0.5)
     else:
         tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
         tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-    
+
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -53,26 +53,21 @@ def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Te
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
-        debug=pipe.debug
+        debug=pipe.debug,
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    means3D, opacity, visibility = pc.get_render_state(
+        viewpoint_camera.timestamp,
+        time_shift=time_shift,
+        enable_long_tail=pc.long_tail_active,
+        lt_point_mask=lt_point_mask,
+    )
     means2D = screenspace_points
-    opacity = pc.get_opacity
     scales = None
     rotations = None
     cov3D_precomp = None
-
-    if time_shift is not None:
-        means3D = pc.get_xyz_SHM(viewpoint_camera.timestamp-time_shift)
-        means3D = means3D + pc.get_inst_velocity * time_shift
-        marginal_t = pc.get_marginal_t(viewpoint_camera.timestamp-time_shift)
-    else:
-        means3D = pc.get_xyz_SHM(viewpoint_camera.timestamp)
-        marginal_t = pc.get_marginal_t(viewpoint_camera.timestamp)
-    opacity = opacity * marginal_t
 
     if pipe.compute_cov3D_python:
         cov3D_precomp = pc.get_covariance(scaling_modifier)
@@ -80,8 +75,6 @@ def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Te
         scales = pc.get_scaling
         rotations = pc.get_rotation
 
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
     shs = None
     colors_precomp = None
     if override_color is None:
@@ -96,59 +89,52 @@ def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Te
     else:
         colors_precomp = override_color
 
-    feature_list = other
-
-    if len(feature_list) > 0:
-        features = torch.cat(feature_list, dim=1)
-        S_other = features.shape[1]
+    if len(other) > 0:
+        features = torch.cat(other, dim=1)
+        s_other = features.shape[1]
     else:
         features = torch.zeros_like(means3D[:, :0])
-        S_other = 0
-    
-    # Prefilter
+        s_other = 0
+
     if mask is None:
-        mask = marginal_t[:, 0] > 0.05
+        point_mask = visibility[:, 0] > 0.05
     else:
-        mask = mask & (marginal_t[:, 0] > 0.05)
-    masked_means3D = means3D[mask]
+        point_mask = mask & (visibility[:, 0] > 0.05)
+
+    masked_means3D = means3D[point_mask]
     masked_xyz_homo = torch.cat([masked_means3D, torch.ones_like(masked_means3D[:, :1])], dim=1)
-    masked_depth = (masked_xyz_homo @ viewpoint_camera.world_view_transform[:, 2:3])
+    masked_depth = masked_xyz_homo @ viewpoint_camera.world_view_transform[:, 2:3]
     depth_alpha = torch.zeros(means3D.shape[0], 2, dtype=torch.float32, device=means3D.device)
-    depth_alpha[mask] = torch.cat([
-        masked_depth,
-        torch.ones_like(masked_depth)
-    ], dim=1)
+    depth_alpha[point_mask] = torch.cat([masked_depth, torch.ones_like(masked_depth)], dim=1)
     features = torch.cat([features, depth_alpha], dim=1)
 
-    # Rasterize visible Gaussians to image, obtain their radii (on screen).
     contrib, rendered_image, rendered_feature, radii = rasterizer(
-        means3D = means3D,
-        means2D = means2D,
-        shs = shs,
-        colors_precomp = colors_precomp,
-        features = features,
-        opacities = opacity,
-        scales = scales,
-        rotations = rotations,
-        cov3D_precomp = cov3D_precomp,
-        mask = mask)
-    
-    rendered_other, rendered_depth, rendered_opacity = rendered_feature.split([S_other, 1, 1], dim=0)
+        means3D=means3D,
+        means2D=means2D,
+        shs=shs,
+        colors_precomp=colors_precomp,
+        features=features,
+        opacities=opacity,
+        scales=scales,
+        rotations=rotations,
+        cov3D_precomp=cov3D_precomp,
+        mask=point_mask,
+    )
+
+    rendered_other, rendered_depth, rendered_opacity = rendered_feature.split([s_other, 1, 1], dim=0)
     rendered_image_before = rendered_image
     if env_map is not None:
         bg_color_from_envmap = env_map(viewpoint_camera.get_world_directions(is_training).permute(1, 2, 0)).permute(2, 0, 1)
         rendered_image = rendered_image + (1 - rendered_opacity) * bg_color_from_envmap
 
-    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
-    # They will be excluded from value updates used in the splitting criteria.
-    return {"render": rendered_image,
-            "render_nobg": rendered_image_before,
-            "viewspace_points": screenspace_points,
-            "visibility_filter": radii > 0,
-            "radii": radii,
-            "contrib": contrib,
-            "depth": rendered_depth,
-            "alpha": rendered_opacity,
-            "feature": rendered_other}
-
-
+    return {
+        "render": rendered_image,
+        "render_nobg": rendered_image_before,
+        "viewspace_points": screenspace_points,
+        "visibility_filter": radii > 0,
+        "radii": radii,
+        "contrib": contrib,
+        "depth": rendered_depth,
+        "alpha": rendered_opacity,
+        "feature": rendered_other,
+    }

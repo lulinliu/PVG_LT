@@ -1,0 +1,48 @@
+exhaust_test: false
+
+
+# ModelParams
+scene_type: "Waymo"
+resolution_scales: [1, 2, 4, 8, 16]
+cam_num: 3
+start_frame: 0
+end_frame: -1
+eval: true
+num_pts: 600000
+t_init: 0.1
+separate_scaling_t: 0.2
+
+# PipelineParams
+
+
+# OptimizationParams
+iterations: 30000
+
+opacity_lr: 0.005
+
+densify_until_iter: 15000
+densify_grad_threshold: 0.00017
+sh_increase_interval: 2000
+
+lambda_v_reg: 0.01
+lambda_dssim: 0.2
+
+# Long-tail tuning v3 for first15
+# This version is intentionally closer to vanilla to reduce sky trails.
+lt_activate_max_scale: 1
+lt_frame_local_only: true
+lt_prob_threshold: 0.5
+lt_min_obs: 3
+lt_current_mask_threshold: 0.5
+lt_min_obs_before_prune: 6
+lt_mask_dilate_px: 0
+lt_rgb_weight: 1.5
+lt_mask_weight: 2.0
+lt_sparse_weight: 0.0003
+lt_gate_weight: 0.01
+lt_gate_max_span_factor: 1.5
+lt_motion_smooth_weight: 0.002
+lt_prune_opacity_factor: 1.0
+lt_densify_grad_factor: 1.0
+lt_positive_weight_cap: 12
+lt_sampling_boost: 2.0

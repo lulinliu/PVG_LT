@@ -1,0 +1,43 @@
+exhaust_test: false
+
+
+# ModelParams
+scene_type: "Waymo"
+resolution_scales: [1, 2, 4, 8, 16]
+cam_num: 3
+start_frame: 0
+end_frame: -1
+eval: true
+num_pts: 600000
+t_init: 0.1
+separate_scaling_t: 0.2
+
+# PipelineParams
+
+
+# OptimizationParams
+iterations: 30000
+
+opacity_lr: 0.005
+
+densify_until_iter: 15000
+densify_grad_threshold: 0.00017
+sh_increase_interval: 2000
+
+lambda_v_reg: 0.01
+lambda_dssim: 0.15
+
+# Long-tail tuning v2 for first15
+lt_activate_max_scale: 1
+lt_prob_threshold: 0.35
+lt_min_obs: 2
+lt_min_obs_before_prune: 12
+lt_mask_dilate_px: 1
+lt_rgb_weight: 3.5
+lt_mask_weight: 5.0
+lt_gate_weight: 0.002
+lt_gate_max_span_factor: 3.0
+lt_prune_opacity_factor: 0.4
+lt_densify_grad_factor: 0.35
+lt_positive_weight_cap: 60
+lt_sampling_boost: 3.0

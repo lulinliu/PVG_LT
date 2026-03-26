@@ -34,3 +34,9 @@ __pycache__/
 third_party/
 nvdiffrast/
 simple-knn/
+
+# tail miner local assets
+tail_miner/auth.json
+tail_miner/dinov3_weights/*.pth
+tail_miner/output*.log
+tail_miner/output_smoke*/

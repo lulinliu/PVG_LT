@@ -8,6 +8,8 @@ vis_step: 500
 save_train_render_video: false
 train_render_video_fps: 10
 start_checkpoint: null
+save_scale2_final_checkpoint: false
+scale2_final_checkpoint_root: null
 seed: 0
 
 # ModelParams
@@ -18,6 +20,7 @@ start_frame: 65  # for kitti
 end_frame: 120  # for kitti
 model_path: ???
 resolution_scales: [1]
+initial_resolution_scale: null
 resolution: -1
 white_background: false
 data_device: "cuda"
@@ -36,6 +39,27 @@ testhold: 4  # NVS
 env_map_res: 1024
 separate_scaling_t: 0.1
 neg_fov: true
+enable_long_tail_branch: true
+lt_frame_local_only: false
+lt_mask_dirname: "lt_masks"
+lt_activate_max_scale: 4
+lt_prob_threshold: 0.6
+lt_ema_decay: 0.9
+lt_min_obs: 5
+lt_current_mask_threshold: 0.25
+lt_mask_dilate_px: 2
+lt_rgb_weight: 2.0
+lt_mask_weight: 4.0
+lt_sparse_weight: 0.0001
+lt_gate_weight: 0.001
+lt_gate_max_span_factor: 4.0
+lt_motion_smooth_weight: 0.001
+lt_prune_opacity_factor: 0.5
+lt_densify_grad_factor: 0.5
+lt_min_obs_before_prune: 10
+lt_positive_weight_cap: 30
+lt_sampling_boost: 3.0
+eval_render_video_fps: 10
 
 # PipelineParams
 convert_SHs_python: false

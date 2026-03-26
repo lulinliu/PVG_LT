@@ -18,15 +18,25 @@ from tqdm import tqdm
 from .graphics_utils import fov2focal
 
 
+def _resize_optional_mask(mask, resolution):
+    if mask is None:
+        return None
+    if mask.shape[:2] != resolution[::-1]:
+        mask = cv2.resize(mask, resolution, interpolation=cv2.INTER_LINEAR)
+    if len(mask.shape) == 2:
+        mask = mask[..., None]
+    return torch.from_numpy(mask).float().permute(2, 0, 1)
+
+
 def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
-    orig_w, orig_h = cam_info.width, cam_info.height  # cam_info.image.size
+    orig_w, orig_h = cam_info.width, cam_info.height
 
     if args.resolution in [1, 2, 3, 4, 8, 16, 32]:
         resolution = round(orig_w / (resolution_scale * args.resolution)), round(
             orig_h / (resolution_scale * args.resolution)
         )
         scale = resolution_scale * args.resolution
-    else:  # should be a type that converts to float
+    else:
         if args.resolution == -1:
             global_down = 1
         else:
@@ -45,7 +55,7 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
         cy = None
         fy = None
         fx = None
-    
+
     if cam_info.image.shape[:2] != resolution[::-1]:
         image_rgb = cv2.resize(cam_info.image, resolution)
     else:
@@ -53,16 +63,11 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
     image_rgb = torch.from_numpy(image_rgb).float().permute(2, 0, 1)
     gt_image = image_rgb[:3, ...]
 
-    if cam_info.sky_mask is not None:
-        if cam_info.sky_mask.shape[:2] != resolution[::-1]:
-            sky_mask = cv2.resize(cam_info.sky_mask, resolution)
-        else:
-            sky_mask = cam_info.sky_mask
-        if len(sky_mask.shape) == 2:
-            sky_mask = sky_mask[..., None]
-        sky_mask = torch.from_numpy(sky_mask).float().permute(2, 0, 1)
-    else:
-        sky_mask = None
+    sky_mask = _resize_optional_mask(cam_info.sky_mask, resolution)
+    lt_mask = _resize_optional_mask(cam_info.lt_mask, resolution)
+    lt_mask_conf = _resize_optional_mask(cam_info.lt_mask_conf, resolution)
+    if lt_mask_conf is None:
+        lt_mask_conf = lt_mask
 
     if cam_info.pointcloud_camera is not None:
         h, w = gt_image.shape[1:]
@@ -86,9 +91,7 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
         uvz = uvz[uvz[:, 1] < h]
         uvz = uvz[uvz[:, 0] >= 0]
         uvz = uvz[uvz[:, 0] < w]
-        uv = uvz[:, :2]
-        uv = uv.astype(int)
-        # TODO: may need to consider overlap
+        uv = uvz[:, :2].astype(int)
         pts_depth[0, uv[:, 1], uv[:, 0]] = uvz[:, 2]
         pts_depth = torch.from_numpy(pts_depth).float()
     else:
@@ -113,6 +116,8 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
         image_path=cam_info.image_path,
         pts_depth=pts_depth,
         sky_mask=sky_mask,
+        lt_mask=lt_mask,
+        lt_mask_conf=lt_mask_conf,
     )
 
 
@@ -135,24 +140,33 @@ def camera_to_JSON(id, camera: Camera):
     pos = W2C[:3, 3]
     rot = W2C[:3, :3]
     serializable_array_2d = [x.tolist() for x in rot]
+    width = getattr(camera, "image_width", getattr(camera, "width", None))
+    height = getattr(camera, "image_height", getattr(camera, "height", None))
+    image = getattr(camera, "image", None)
 
-    if camera.cx is None:
+    if (width is None or height is None) and image is not None:
+        if hasattr(image, "size"):
+            width, height = image.size
+        elif hasattr(image, "shape") and len(image.shape) >= 2:
+            height, width = image.shape[:2]
+
+    if getattr(camera, "cx", None) is None:
         camera_entry = {
             "id": id,
             "img_name": camera.image_name,
-            "width": camera.width,
-            "height": camera.height,
+            "width": width,
+            "height": height,
             "position": pos.tolist(),
             "rotation": serializable_array_2d,
-            "FoVx": camera.FovX,
-            "FoVy": camera.FovY,
+            "FoVx": camera.FoVx,
+            "FoVy": camera.FoVy,
         }
     else:
         camera_entry = {
             "id": id,
             "img_name": camera.image_name,
-            "width": camera.width,
-            "height": camera.height,
+            "width": width,
+            "height": height,
             "position": pos.tolist(),
             "rotation": serializable_array_2d,
             "fx": camera.fx,
