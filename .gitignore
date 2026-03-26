@@ -31,6 +31,10 @@ video_exports/
 __pycache__/
 *.pyc
 
+# local archive artifacts
+data_longtail.tar.part-*
+data_longtail.tar.sha256
+
 third_party/
 nvdiffrast/
 simple-knn/

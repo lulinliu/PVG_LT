@@ -138,6 +138,80 @@ model_path=eval_output/kitti_nvs/0001 \
 start_frame=380 end_frame=431
 ```
 
+### Long-tail workflow in this repo
+
+This repo also contains a long-tail Waymo-style setup under `data_longtail/`.
+The current default scene used by the helper scripts is:
+
+```text
+data_longtail/0c1afba4-e796-43c6-ba36-6a225b6f2968
+```
+
+Expected scene layout is compatible with the current loader and includes:
+
+```text
+data_longtail/<scene_id>/
+├── image_0, image_1, image_2
+├── sky_0, sky_1, sky_2
+├── velodyne
+├── pose
+└── longtail_mask0, longtail_mask1, longtail_mask2
+```
+
+The loader also accepts `lt_mask{0,1,2}` and `lt_masks{0,1,2}` as mask directory names.
+
+If you want MP4 outputs during evaluation, make sure `imageio` is available:
+
+```bash
+pip install imageio imageio-ffmpeg
+```
+
+Recommended script for the current tuned first-15-frame setup:
+
+```bash
+bash scripts/run_longtail_tuned_v2_first15.sh <GPU_ID> <TASK> [RUN_TAG]
+```
+
+The most useful modes are:
+
+- `recon_full`: reconstruction training + long-tail eval + video export
+- `all`: reconstruction + NVS training + long-tail eval + video export
+- `eval_recon` / `eval_nvs`: rerun evaluation and regenerate metrics/videos from an existing checkpoint
+
+Examples:
+
+```bash
+# Reconstruction + long-tail eval + videos on the first 15 frames
+bash scripts/run_longtail_tuned_v2_first15.sh 0 recon_full exp_v2_first15
+
+# Full one-shot pipeline: reconstruction + NVS + eval + videos
+bash scripts/run_longtail_tuned_v2_first15.sh 0 all exp_v2_first15
+```
+
+There is also a 49-frame script if you want the longer run:
+
+```bash
+bash scripts/run_longtail_tuned_suite.sh 0 all exp_first49
+```
+
+Main outputs:
+
+- checkpoints:
+  `eval_output/waymo_reconstruction_longtail_tuned_v2_first15/<scene_id>_<run_tag>`
+- copied reconstruction metrics/videos:
+  `eval_output/longtail_tuned_v2_first15_metrics/reconstruction_<scene_id>_<run_tag>_iter<iter>`
+- copied NVS metrics/videos:
+  `eval_output/longtail_tuned_v2_first15_metrics/nvs_<scene_id>_<run_tag>_iter<iter>`
+
+Inside each model directory, region metrics are written under `eval/`, and evaluation videos are written to:
+
+```text
+eval/train_<iter>_videos/
+eval/test_<iter>_videos/
+```
+
+Each video directory contains one MP4 per camera, plus the combined multi-camera video produced by `evaluate_longtail_regions.py`.
+
 After training, evaluation results can be found in `{EXPERIMENT_DIR}/eval` directory.
 
 ### Evaluating
