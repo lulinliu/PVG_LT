@@ -94,6 +94,7 @@ class GaussianModel:
         self.lt_prune_opacity_factor = float(getattr(args, "lt_prune_opacity_factor", 0.5))
         self.lt_densify_grad_factor = float(getattr(args, "lt_densify_grad_factor", 0.5))
         self.lt_gate_max_span_factor = float(getattr(args, "lt_gate_max_span_factor", 4.0))
+        self.lt_regularization_max_points = int(getattr(args, "lt_regularization_max_points", 250000))
 
         self.setup_functions()
 
@@ -235,6 +236,133 @@ class GaussianModel:
             self.t_gradient_accum = t_gradient_accum
             self.denom = denom
             self.optimizer.load_state_dict(opt_dict)
+
+    def clone_from(self, other):
+        self.active_sh_degree = other.active_sh_degree
+        self.spatial_lr_scale = other.spatial_lr_scale
+        self.T = other.T
+        self.velocity_decay = other.velocity_decay
+        self.time_duration = list(other.time_duration)
+        self.no_time_split = other.no_time_split
+        self.t_grad = other.t_grad
+        self.contract = other.contract
+        self.t_init = other.t_init
+        self.big_point_threshold = other.big_point_threshold
+        self.random_init_point = other.random_init_point
+        self.long_tail_enabled = other.long_tail_enabled
+        self.long_tail_active = other.long_tail_active
+        self.lt_frame_local_only = other.lt_frame_local_only
+        self.lt_prob_threshold = other.lt_prob_threshold
+        self.lt_ema_decay = other.lt_ema_decay
+        self.lt_min_obs = other.lt_min_obs
+        self.lt_current_mask_threshold = other.lt_current_mask_threshold
+        self.lt_min_obs_before_prune = other.lt_min_obs_before_prune
+        self.lt_prune_opacity_factor = other.lt_prune_opacity_factor
+        self.lt_densify_grad_factor = other.lt_densify_grad_factor
+        self.lt_gate_max_span_factor = other.lt_gate_max_span_factor
+        self.lt_regularization_max_points = other.lt_regularization_max_points
+
+        def _clone_param(param):
+            return nn.Parameter(param.detach().clone().requires_grad_(True))
+
+        def _clone_tensor(tensor):
+            return tensor.detach().clone()
+
+        self._xyz = _clone_param(other._xyz)
+        self._features_dc = _clone_param(other._features_dc)
+        self._features_rest = _clone_param(other._features_rest)
+        self._scaling = _clone_param(other._scaling)
+        self._rotation = _clone_param(other._rotation)
+        self._opacity = _clone_param(other._opacity)
+        self._t = _clone_param(other._t)
+        self._scaling_t = _clone_param(other._scaling_t)
+        self._velocity = _clone_param(other._velocity)
+        self._lt_basis = _clone_param(other._lt_basis)
+        self._lt_on = _clone_param(other._lt_on)
+        self._lt_off = _clone_param(other._lt_off)
+        self._lt_beta_on = _clone_param(other._lt_beta_on)
+        self._lt_beta_off = _clone_param(other._lt_beta_off)
+        self._lt_prob = _clone_tensor(other._lt_prob)
+        self._lt_obs_count = _clone_tensor(other._lt_obs_count)
+        self._lt_flag = _clone_tensor(other._lt_flag)
+        self.max_radii2D = _clone_tensor(other.max_radii2D)
+        self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device=self._xyz.device)
+        self.t_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device=self._xyz.device)
+        self.denom = torch.zeros((self._xyz.shape[0], 1), device=self._xyz.device)
+        self.optimizer = None
+
+    def hard_keep_points(self, keep_mask):
+        keep_mask = keep_mask.bool()
+        device = self._xyz.device
+        if keep_mask.numel() == 0:
+            keep_mask = torch.zeros((self._xyz.shape[0],), dtype=torch.bool, device=device)
+        if keep_mask.shape[0] != self._xyz.shape[0]:
+            raise ValueError(f"keep_mask shape {keep_mask.shape[0]} does not match point count {self._xyz.shape[0]}")
+
+        def _slice_param(param):
+            return nn.Parameter(param.detach()[keep_mask].clone().requires_grad_(True))
+
+        def _slice_tensor(tensor, trailing_dims=1):
+            if tensor.numel() == 0:
+                shape = [int(keep_mask.sum().item())] + list(tensor.shape[1:])
+                return torch.zeros(shape, device=device, dtype=self._xyz.dtype)
+            return tensor.detach()[keep_mask].clone()
+
+        self._xyz = _slice_param(self._xyz)
+        self._features_dc = _slice_param(self._features_dc)
+        self._features_rest = _slice_param(self._features_rest)
+        self._scaling = _slice_param(self._scaling)
+        self._rotation = _slice_param(self._rotation)
+        self._opacity = _slice_param(self._opacity)
+        self._t = _slice_param(self._t)
+        self._scaling_t = _slice_param(self._scaling_t)
+        self._velocity = _slice_param(self._velocity)
+        self._lt_basis = _slice_param(self._lt_basis)
+        self._lt_on = _slice_param(self._lt_on)
+        self._lt_off = _slice_param(self._lt_off)
+        self._lt_beta_on = _slice_param(self._lt_beta_on)
+        self._lt_beta_off = _slice_param(self._lt_beta_off)
+        self._lt_prob = _slice_tensor(self._lt_prob)
+        self._lt_obs_count = _slice_tensor(self._lt_obs_count)
+        self._lt_flag = _slice_tensor(self._lt_flag)
+        self.max_radii2D = _slice_tensor(self.max_radii2D)
+        count = self._xyz.shape[0]
+        self.xyz_gradient_accum = torch.zeros((count, 1), device=device)
+        self.t_gradient_accum = torch.zeros((count, 1), device=device)
+        self.denom = torch.zeros((count, 1), device=device)
+        self.optimizer = None
+        self._ensure_lt_state_from_existing()
+
+    @torch.no_grad()
+    def mark_all_long_tail(self, value=True):
+        fill = 1.0 if value else 0.0
+        self._lt_flag = torch.full((self.get_xyz.shape[0], 1), fill, device=self.get_xyz.device, dtype=self.get_xyz.dtype)
+        if value:
+            self._lt_prob = torch.ones((self.get_xyz.shape[0], 1), device=self.get_xyz.device, dtype=self.get_xyz.dtype)
+            self._lt_obs_count = torch.full(
+                (self.get_xyz.shape[0], 1),
+                max(1.0, float(self.lt_min_obs)),
+                device=self.get_xyz.device,
+                dtype=self.get_xyz.dtype,
+            )
+
+    @torch.no_grad()
+    def reset_temporal_support(self, t_init=None, gate_span_factor=None):
+        if self.get_xyz.shape[0] == 0:
+            return
+        init_value = float(self.t_init if t_init is None else t_init)
+        dist_t = torch.full_like(self._t, (self.time_duration[1] - self.time_duration[0]) * init_value)
+        self._scaling_t = nn.Parameter(
+            self.scaling_t_inverse_activation(torch.sqrt(dist_t)).detach().clone().requires_grad_(True)
+        )
+        window = self.get_scaling_t.detach().clamp_min(1e-3)
+        span_factor = float(1.0 if gate_span_factor is None else gate_span_factor)
+        gate_window = window * span_factor
+        beta_init = (0.25 * gate_window).clamp_min(1e-3)
+        self._lt_on = nn.Parameter((self._t.detach() - gate_window).clone().requires_grad_(True))
+        self._lt_off = nn.Parameter((self._t.detach() + gate_window).clone().requires_grad_(True))
+        self._lt_beta_on = nn.Parameter(self._beta_inverse(beta_init).clone().requires_grad_(True))
+        self._lt_beta_off = nn.Parameter(self._beta_inverse(beta_init).clone().requires_grad_(True))
 
     @property
     def get_scaling(self):
@@ -908,6 +1036,15 @@ class GaussianModel:
         zero = torch.zeros((), device=self.get_xyz.device)
         if mask.sum() == 0:
             return zero, zero, zero
+
+        max_points = int(getattr(self, "lt_regularization_max_points", 250000))
+        if max_points > 0:
+            indices = torch.nonzero(mask, as_tuple=False).squeeze(1)
+            if indices.numel() > max_points:
+                perm = torch.randperm(indices.numel(), device=indices.device)[:max_points]
+                sampled_mask = torch.zeros_like(mask)
+                sampled_mask[indices[perm]] = True
+                mask = sampled_mask
 
         sparse = self._lt_basis[mask].abs().mean()
         gate_span = self.get_lt_off[mask] - self.get_lt_on[mask]
