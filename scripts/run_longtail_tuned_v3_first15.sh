@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/ssd2/wenyan/CarTwin/longtail/PVG"
+CODE_ROOT="/ssd2/wenyan/code/longtail/PVG_LT"
+DATA_ROOT="/ssd2/wenyan/code/longtail/longtail_data"
 SCENE_ID="0c1afba4-e796-43c6-ba36-6a225b6f2968"
-DATA_PATH="$ROOT/data_longtail/$SCENE_ID"
-GPU_ID="${1:-6}"
+DATA_PATH="$DATA_ROOT/data_longtail/$SCENE_ID"
+GPU_ID="${1:-0}"
 TASK="${2:-all}"
 RUN_TAG="${3:-}"
 START_FRAME=0
@@ -13,10 +14,10 @@ END_FRAME=14
 RECON_CONFIG="configs/waymo_reconstruction_longtail_tuned_v3_first15.yaml"
 NVS_CONFIG="configs/waymo_nvs_longtail_tuned_v3_first15.yaml"
 
-RECON_MODEL_ROOT="$ROOT/eval_output/waymo_reconstruction_longtail_tuned_v3_first15"
-NVS_MODEL_ROOT="$ROOT/eval_output/waymo_nvs_longtail_tuned_v3_first15"
-EVAL_OUTPUT_ROOT="$ROOT/eval_output/longtail_tuned_v3_first15_metrics"
-MANAGED_SCALE2_ROOT="$ROOT/eval_output/managed_scale2_final_ckpts"
+RECON_MODEL_ROOT="$CODE_ROOT/eval_output/waymo_reconstruction_longtail_tuned_v3_first15"
+NVS_MODEL_ROOT="$CODE_ROOT/eval_output/waymo_nvs_longtail_tuned_v3_first15"
+EVAL_OUTPUT_ROOT="$CODE_ROOT/eval_output/longtail_tuned_v3_first15_metrics"
+MANAGED_SCALE2_ROOT="$CODE_ROOT/eval_output/managed_scale2_final_ckpts"
 
 make_timestamp() {
   date +"%Y%m%d_%H%M%S"
@@ -66,7 +67,7 @@ run_train() {
   local model_path
   model_path=$(build_model_path "$model_root")
   mkdir -p "$model_path"
-  cd "$ROOT"
+  cd "$CODE_ROOT"
   echo "Training output: $model_path"
   CUDA_VISIBLE_DEVICES="$GPU_ID" python train.py \
     --config "$config_path" \
@@ -91,7 +92,7 @@ run_eval() {
     model_path=$(resolve_latest_model_path "$model_root")
     RUN_TAG=$(resolve_run_tag_from_model_path "$model_path")
   fi
-  cd "$ROOT"
+  cd "$CODE_ROOT"
   echo "Evaluating model: $model_path"
   CUDA_VISIBLE_DEVICES="$GPU_ID" python evaluate_longtail_regions.py \
     --config "$config_path" \

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/ssd2/wenyan/CarTwin/longtail/PVG"
-SOURCE_PATH="$ROOT/data_longtail/0c1afba4-e796-43c6-ba36-6a225b6f2968"
-MODEL_PATH="$ROOT/eval_output/longtail_v2_first49/0c1afba4-e796-43c6-ba36-6a225b6f2968"
-OUTPUT_ROOT="$ROOT/eval_output/longtail_region_eval_first49"
+CODE_ROOT="/ssd2/wenyan/code/longtail/PVG_LT"
+DATA_ROOT="/ssd2/wenyan/code/longtail/longtail_data"
+SOURCE_PATH="$DATA_ROOT/data_longtail/0c1afba4-e796-43c6-ba36-6a225b6f2968"
+MODEL_PATH="$CODE_ROOT/eval_output/longtail_v2_first49/0c1afba4-e796-43c6-ba36-6a225b6f2968"
+OUTPUT_ROOT="$CODE_ROOT/eval_output/longtail_region_eval_first49"
 SCENE_NAME="0c1afba4-e796-43c6-ba36-6a225b6f2968"
-GPU_ID="${1:-6}"
+GPU_ID="${1:-0}"
 
-cd "$ROOT"
+cd "$CODE_ROOT"
 
 mkdir -p "$OUTPUT_ROOT"
 
